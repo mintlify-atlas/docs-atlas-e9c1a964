@@ -1,0 +1,111 @@
+---
+title: "How to add a new byte-pattern signature to CS2 SDK"
+description: "Step-by-step guide to finding a function in IDA or Ghidra, writing a stable byte pattern, and submitting a new signature entry to CS2 SDK."
+---
+
+Contributing a signature means picking a unique byte sequence that reliably identifies a function across CS2 patches, wiring it to the right resolver, and verifying the resolved RVA matches your disassembler. The whole process takes about five minutes once you have the function open in IDA, Ghidra, or Binary Ninja.
+
+<Steps>
+  <Step title="Find the function">
+    Open your disassembler (IDA Pro, Ghidra, or Binary Ninja) on the target module — typically `client.dll`, `engine2.dll`, or another module that CS2 loads at startup. Locate the function you want to expose and keep its address handy for the verification step.
+  </Step>
+
+  <Step title="Pick stable bytes">
+    Aim for **12–20 bytes** that survive small refactors. The goal is a sequence that is unique inside the module's `.text` section and unlikely to shift across patches.
+
+    Good candidates:
+
+    - ✅ Function prologue (`48 89 5C 24 ??` patterns)
+    - ✅ Unique constant loads (`48 8D 0D ?? ?? ?? ??` to a unique string)
+    - ✅ Calls to clearly-named imports
+
+    Patterns to avoid:
+
+    - ❌ Long sequences of `mov reg, reg` — too generic
+    - ❌ Bytes that contain literal offsets that move every patch
+  </Step>
+
+  <Step title="Wildcard the volatile bits">
+    Replace bytes that vary across builds with `??`. Half-byte wildcards (`?0`, `4?`) are supported when only one nibble changes — useful when the destination register differs between builds. When in doubt, wildcard.
+
+    ```text
+    48 8D 0D ?? ?? ?? ??       ; LEA RCX, [rip + str] — wildcard the disp
+    E8 ?? ?? ?? ??              ; CALL rel32          — wildcard the disp
+    48 8B ?? 24 ??              ; MOV reg from stack  — wildcard reg + offset
+    ```
+  </Step>
+
+  <Step title="Pick the resolver">
+    The `ResolveKind` tells the scanner what to do with the match address. The match address is the byte offset of the first byte of the pattern in `.text` — usually not the final address you want.
+
+    | Pattern starts with | Use |
+    | --- | --- |
+    | Function prologue | `ResolveKind::None` |
+    | `E8` (CALL) or `E9` (JMP) | `ResolveKind::Rel32 { rel_off: 1 }` |
+    | `48 8D 0D` (LEA RCX, \[rip+x\]) | `ResolveKind::RipRel { rel_off: 3 }` |
+    | References a unique string | `ResolveKind::StringRef` (put the literal string in `needle`) |
+
+    For `Rel32` and `RipRel`, `rel_off` is the byte index of the displacement field relative to the start of the pattern. An off-by-one here gives you a plausible but wrong RVA.
+
+    <Note>
+      `StringRef` is the most resilient resolver across CS2 patches. The scanner locates the literal needle string in `.rdata`, synthesizes a `LEA` pattern, and walks back to the enclosing function prologue — equivalent to the Ghidra "find by string" workflow.
+    </Note>
+  </Step>
+
+  <Step title="Add the entry">
+    Open `src/signatures/database.rs` and append your entry inside the appropriate comment group for the target module. The struct is `Signature` with these fields:
+
+    ```rust
+    Signature {
+        name:      "MyNewThing",
+        module:    "client.dll",
+        needle:    "48 89 5C 24 ?? 48 89 74 24 ?? 57 48 81 EC 50 02 ?? ??",
+        resolve:   ResolveKind::None,
+        extra_off: 0,
+        prototype: "",  // optional IDA/Hex-Rays C prototype, or ""
+    },
+    ```
+
+    - `needle` — the IDA-style byte pattern (or the literal string for `StringRef` entries)
+    - `extra_off` — a signed byte delta added to the resolved VA at runtime (usually `0`)
+    - `prototype` — an optional IDA/Hex-Rays C-style function prototype shown in all output artefacts
+
+    Group the entry under the same comment block as related signatures so contributions stay easy to review.
+  </Step>
+
+  <Step title="Verify">
+    Build and run the dumper against a live CS2 process from the repository root:
+
+    ```powershell
+    cargo run --release
+    ```
+
+    Open the emitted `signatures.json` and find your entry:
+
+    ```json
+    {
+      "name":     "MyNewThing",
+      "module":   "client.dll",
+      "found":    true,
+      "matches":  1,
+      "rva":      "0x1A2B3C4",
+      "va":       "0x7FF6...",
+      "resolve":  "None"
+    }
+    ```
+
+    Cross-check the `rva` against the address in your disassembler.
+
+    <Warning>
+      If `matches > 1`, the pattern is ambiguous and may resolve to the wrong function on a future build. Tighten the pattern by adding more unique bytes or dropping it entirely.
+    </Warning>
+  </Step>
+
+  <Step title="Open a PR">
+    Title your pull request `add signature: MyNewThing`. Include the following in the description:
+
+    - The disassembled function name (or address) you targeted.
+    - Whether the pattern is verified live against a running CS2 process or reasoned-out from a static analysis session.
+    - Any caveats — for example: build-specific, only-on-Windows, or known to be dead on certain builds.
+  </Step>
+</Steps>

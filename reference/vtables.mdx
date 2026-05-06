@@ -1,0 +1,89 @@
+---
+title: "Vtable dumper and virtual method-name recovery"
+description: "CS2 SDK walks every resolved interface vtable and emits per-slot indices with MSVC RTTI class names and signature-based method labelling."
+---
+
+The vtable dumper follows every interface instance pointer to its virtual function table, walks the table slot by slot, and emits per-slot integer indices to `offsets/vtables.{json,hpp,cs}`. These indices let you hook any virtual method by position rather than by scanning for function-body bytes — an approach that survives most routine patches intact.
+
+## What ends up in the output
+
+For each entry in `interfaces.json` the dumper follows the instance pointer and reads the first qword to find the `vftable` pointer. It then walks the vftable as a contiguous array of function pointers, stopping at the first slot whose address falls outside any loaded module's image range. Each slot becomes an `inline constexpr std::ptrdiff_t` in the C++ output:
+
+```cpp
+namespace cs2::vtables::client_dll {
+    // vtable @ client.dll+0x1A2B3C0 (218 methods)
+    namespace Source2Client002 {
+        inline constexpr std::ptrdiff_t update_global_vars  =  11; // client.dll + 0xADEAC0
+        inline constexpr std::ptrdiff_t method_12           =  12; // client.dll + 0xADEC10
+        // ...
+    }
+}
+```
+
+The `vtable_module` field in `vtables.json` records which DLL hosts the vftable bytes. This can differ from the interface's own DLL when the implementation class lives in a sibling module.
+
+## Method-name recovery
+
+The dumper has no PDB files, so most slots are emitted as `method_<N>` with the index as the only identifier. As a bonus pass, each slot's RVA is cross-referenced against the resolved signature database. When a signature's resolved RVA matches a slot's function pointer, the dumper uses the signature's name as the slot label instead of the generic `method_<N>` form. This is how named slots like `update_global_vars` appear in the output without any extra work from the consumer.
+
+<Info>
+  Only slots whose RVAs appear in the signature hit list receive real names. All other slots keep their `method_<N>` label. You can add a signature for any function to propagate its name into the vtable output automatically.
+</Info>
+
+## Class-name recovery via RTTI
+
+Every polymorphic class compiled by MSVC stores a back-pointer to a `RTTICompleteObjectLocator` at slot `-1` of its vtable. The dumper follows the chain:
+
+```
+vftable[-1] → RTTICompleteObjectLocator → TypeDescriptor → mangled name
+```
+
+Demangling the mangled name gives the original C++ class name without signatures, heuristics, or PDB files. CS2 is compiled with `/GR` (RTTI enabled), so every interface vtable in the live build resolves cleanly.
+
+The recovered class name becomes the C++ namespace in `vtables.hpp`, with the original interface version string preserved in a banner comment:
+
+```cpp
+// CSource2Client (iface: Source2Client002) | vtable @ client.dll+0x1A9AA18 (231 methods)
+namespace CSource2Client {
+    inline constexpr std::ptrdiff_t method_0 = 0; // client.dll + 0x...
+    // ...
+}
+```
+
+<Note>
+  If a vtable does not carry valid RTTI — which can happen with compiler thunks or vftables that fail the signature/self-RVA sanity checks — the dumper falls back to using the interface version string as the namespace name.
+</Note>
+
+## Hooking by index
+
+To hook a virtual method, read the vtable pointer from the interface instance, index into it with the slot constant, and install your hook on the resulting function pointer:
+
+```cpp
+#include "cs2sdk.hpp"  // from sdk/cs2sdk.hpp, on your include path
+
+using CreateMove_t = bool(__thiscall*)(void* self, int slot, float ft, bool active);
+
+void hook_create_move(void* iface) {
+    auto** vt = *reinterpret_cast<void***>(iface);
+    auto*  fn = vt[cs2::vtables::client_dll::Source2Client002::method_25];
+    install_hook(fn, &your_create_move_hook);
+}
+```
+
+The slot index is stable as long as Valve does not add, remove, or reorder virtual methods on the interface — an event that is far rarer than the byte-level codegen changes that break byte patterns on every patch.
+
+## Why vtable indices are safer than byte patterns
+
+A byte pattern encodes a snapshot of one function's machine code at a particular compiler version. Any change to register allocation, inlining decisions, or instruction scheduling can invalidate it. A vtable index encodes only the *position* of a method in an interface's virtual dispatch table. That position changes only when the interface itself is structurally modified — a much rarer event. Where a signature gives you "the function that does X today", a vtable index gives you "the slot that has done X for years".
+
+<Tip>
+  Use vtable indices for stable, high-value hooks like `CreateMove` and `FrameStageNotify`. Reserve byte patterns for functions that are not virtual or that need a specific RVA for other reasons (e.g. direct calls into game internals).
+</Tip>
+
+## Source reference
+
+| Concern | File |
+|---|---|
+| Interface enumeration | `src/analysis/interfaces.rs` |
+| Vtable walker | `src/analysis/vtables.rs` |
+| Emitter and name oracle | `src/output/vtables.rs` |

@@ -1,0 +1,220 @@
+---
+title: "Output format reference for each language"
+description: "CS2 SDK emits offsets, schemas, and signatures in C++, C#, Rust, Zig, and JSON. Understand the shape of each generated file and how constants are named."
+---
+
+After a successful run, `cs2-sdk.exe` writes generated files into two subdirectories of your output folder: `sdk/` for the offsets pass and `signatures/` for the signatures pass. Each language target gets its own file per category. This page describes the shape of every generated file, the naming conventions used for constants, and which formats are available for each pass.
+
+## Format overview
+
+| Format | Buttons | Signatures | SDK amalgamation |
+|--------|:-------:|:----------:|:----------------:|
+| C++ (`.hpp`) | `buttons.hpp` | `signatures.hpp` | `cs2sdk.hpp` |
+| C# (`.cs`) | `buttons.cs` | `signatures.cs` | — |
+| Rust (`.rs`) | `buttons.rs` | `signatures.rs` | `cs2sdk.rs` |
+| Zig (`.zig`) | `buttons.zig` | — | — |
+| JSON (`.json`) | `buttons.json` | `signatures.json` | `netvars.json`, `vtables.json` |
+
+<Note>
+  The `--file-types` flag controls which formats are emitted for the **buttons** output. The schema, netvars, interface, and vtable outputs always go to `sdk/` in their respective fixed formats. Signatures are always written in all available formats.
+</Note>
+
+## Generated file formats
+
+<Tabs>
+  <Tab title="C++ / HPP">
+    ### Typed SDK classes
+
+    Each CS2 module gets its own `sdk/<module>.hpp` file with full typed class definitions using `SCHEMA_FIELD` accessors from `cs2sdk_macros.hpp`.
+
+    ```cpp
+    namespace cs2::sdk::client_dll {
+        class C_CSPlayerPawn : public C_BasePlayerPawn {
+        public:
+            SCHEMA_FIELD(std::int32_t,       m_iHealth,        0x344) // int32
+            SCHEMA_FIELD(Vector,             m_vecAbsOrigin,   0x198) // Vector
+            SCHEMA_FIELD(CGameSceneNode*,    m_pGameSceneNode, 0x328) // CGameSceneNode*
+        };
+    }
+    ```
+
+    `SCHEMA_FIELD(type, name, offset)` expands to two inline accessors producing a typed lvalue at `this + offset`. Zero overhead in release builds.
+
+    ### Signatures
+
+    `signatures/signatures.hpp` emits one C++ namespace per source module. Each constant is an `inline constexpr std::string_view` containing the **IDA-style byte pattern** to scan at runtime. A sibling `cs2::fn::<module>::<Name>_t` typedef provides a generic `__fastcall` function-pointer shape.
+
+    ```cpp
+    namespace cs2::signatures::client_dll {
+        inline constexpr std::string_view CCSGOInput__CreateMove =
+            "48 8B C4 4C 89 40 18 48 89 48 08 55 53 41 54 41 55";
+    }
+    namespace cs2::fn::client_dll {
+        using CCSGOInput__CreateMove_t = void(__fastcall*)(void*, ...);
+    }
+    ```
+
+    Pass the pattern string to your runtime scanner to obtain the function address. This keeps compiled cheats address-independent.
+
+    ### Single-include amalgamation
+
+    `sdk/cs2sdk.hpp` `#include`s every per-module header so you only need one line in your cheat project.
+
+    ```cpp
+    #include "sdk/cs2sdk.hpp"
+
+    // All SCHEMA_FIELD classes, netvars, interface stubs, and vtable indices are available.
+    auto hp = pawn->m_iHealth();
+    ```
+
+    <Info>
+      `cs2sdk.hpp` and `cs2sdk_macros.hpp` are the recommended entry point for C++ cheat development. They pull in all per-module headers and the full `SCHEMA_FIELD` macro family in one include.
+    </Info>
+  </Tab>
+
+  <Tab title="C# / CS">
+    ### Button constants
+
+    The `buttons.cs` file is generated for every run. It contains button hash constants for all CS2 input buttons.
+
+    <Note>
+      The raw schema flat-offset C# files (`client_dll.cs`, `netvars.cs`, `interfaces_sdk.cs`) exist in the source emitter code but are not currently written out by the default dump. C# consumers should use `netvars.json` for field offsets and `signatures.cs` for function addresses. See [Using CS2 SDK in C#](/consuming/csharp) for practical patterns.
+    </Note>
+
+    ### Signatures
+
+    `signatures/signatures.cs` is always generated and emits one static class per source module under the `CS2Sdk.Signatures` namespace.
+
+    ```csharp
+    namespace CS2Sdk.Signatures {
+        public static class ClientDll {
+            public const nint CCSGOInput__CreateMove  = 0xC5E7F0;
+            public const nint CCSPlayer__ThirdPersonReset = 0x...;
+        }
+    }
+    ```
+  </Tab>
+
+  <Tab title="Rust / RS">
+    ### Signatures
+
+    `signatures/signatures.rs` emits one `pub mod` per source module with each signature as a `pub const &str` — the IDA-style byte pattern to scan at runtime.
+
+    ```rust
+    pub mod client_dll {
+        pub const CCSGOInput__CreateMove: &str =
+            "48 8B C4 4C 89 40 18 48 89 48 08 55 53 41 54 41 55";
+        pub const CCSPlayer__ThirdPersonReset: &str =
+            "48 8B 40 08 44 38 20 75 10 44 88 67 01";
+    }
+    ```
+
+    Scan the pattern against the live module at runtime to obtain the function address. This keeps your compiled binary address-agnostic.
+
+    ### Rust amalgamation
+
+    `sdk/cs2sdk.rs` is a single Rust source file that re-exports all per-module schema constants. Include it as a `mod` in your crate.
+
+    ```rust
+    mod cs2sdk;   // copy sdk/cs2sdk.rs into your project
+
+    // Access schema constants
+    use cs2sdk::client_dll;
+    ```
+
+    <Info>
+      `cs2sdk.rs` is the recommended single entry point for Rust-based tooling. It pulls in all per-module offset modules in one `mod` declaration.
+    </Info>
+  </Tab>
+
+  <Tab title="Zig">
+    Zig output is available for the **offsets pass only**. Signatures are not yet emitted in Zig format.
+
+    ### Raw schema constants
+
+    Each module is emitted as a Zig file with top-level `pub const` declarations.
+
+    ```zig
+    pub const C_CSPlayerPawn = struct {
+        pub const m_iHealth:          comptime_int = 0x344;
+        pub const m_vecAbsOrigin:     comptime_int = 0x198;
+        pub const m_pGameSceneNode:   comptime_int = 0x328;
+    };
+    ```
+
+    You can control the output with `--file-types zig` to emit only Zig files, or add `zig` to a comma-separated list alongside other formats.
+  </Tab>
+
+  <Tab title="JSON">
+    JSON output is available for both passes and is the format most suitable for tooling, dashboards, and language-agnostic consumers.
+
+    ### signatures.json
+
+    Written to `signatures/signatures.json`. The file is hand-formatted with one entry per line and aligned columns for easy diffing. Only successfully resolved signatures are included; missing entries are omitted.
+
+    ```json
+    {
+      "total_scanned": 211,
+      "found":         193,
+      "missing":       18,
+      "elapsed_ms":    742,
+      "modules":       ["client.dll", "engine2.dll", "..."],
+      "signatures": [
+        { "name": "dwLocalPlayerController", "module": "client.dll", "resolve": "riprel", "va": 0x1812D34A0, "rva": 0x1934A0, "pattern": "48 8B 05 ? ? ? ? 48 85 C0 74 4F 48 8B 40" },
+        { "name": "CCSGOInput::GetUserCmd",  "module": "client.dll", "resolve": "rel32",  "va": 0x18119A610, "rva": 0x59A610, "pattern": "E8 ? ? ? ? 48 8B C8 48 8D 15"            }
+      ]
+    }
+    ```
+
+    Each entry includes:
+
+    | Field | Description |
+    |-------|-------------|
+    | `name` | Signature identifier |
+    | `module` | Source DLL |
+    | `resolve` | Resolution mode: `none`, `rel32`, `riprel`, or `stringref` |
+    | `va` | Absolute virtual address in the live process |
+    | `rva` | Relative virtual address from module base |
+    | `pattern` | IDA-style byte pattern that produced the match |
+
+    ### netvars.json
+
+    Written to `sdk/netvars.json`. Contains only networked field offsets, grouped by class name.
+
+    ```json
+    {
+      "C_CSPlayerPawn": {
+        "m_iHealth":     852,
+        "m_vecAbsOrigin": 408
+      }
+    }
+    ```
+
+    ### vtables.json
+
+    Written to `sdk/vtables.json`. Contains per-interface vtable layouts with slot indices and, where a matching signature exists, the slot name resolved from the signature oracle.
+
+    ```json
+    {
+      "client.dll": {
+        "Source2Client": {
+          "methods": [
+            { "index": 0, "rva": "0x1A2B3C", "name": "Init" },
+            { "index": 1, "rva": "0x1A2B50", "name": null }
+          ]
+        }
+      }
+    }
+    ```
+
+    ### buttons.json
+
+    `sdk/buttons.json` maps every CS2 input button symbolic name to its hash value, available on every run as a machine-readable lookup table.
+  </Tab>
+</Tabs>
+
+## SDK amalgamation files
+
+<Info>
+  `cs2sdk.hpp` and `cs2sdk.rs` are special amalgamation files. They pull in all per-module files via `#include` (C++) or `mod` (Rust) declarations and are the recommended single-include entry point for cheat projects. Use these instead of importing individual per-module files.
+</Info>

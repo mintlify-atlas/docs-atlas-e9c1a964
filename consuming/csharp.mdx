@@ -1,0 +1,72 @@
+---
+title: "Integrating the CS2 SDK C# source files into your cheat"
+description: "Integrate CS2 SDK's generated C# files into your managed cheat. Pin the build number via CS2_BUILD, read netvars, and resolve interfaces."
+---
+
+This page covers consuming the dumper output from a managed C# internal cheat. You will include the two generated C# source files, guard against mismatched builds with a `CS2_BUILD` check, read netvar offsets for memory arithmetic, and resolve typed interface pointers via the generated accessor stubs.
+
+## Which files to include
+
+CS2 SDK's primary typed output targets C++. For C# projects, the most practical approach is to read field offsets from the JSON files and use the signatures output:
+
+| File | Purpose |
+| ---- | ------- |
+| `sdk/netvars.json` | Networked field offsets grouped by class name — machine-readable, easy to deserialize |
+| `signatures/signatures.cs` | Resolved signature constants as a `CS2Sdk.Signatures` C# static class |
+| `sdk/netvars.hpp` | C++ header also usable as a reference for offset values |
+
+Both files are regenerated on every dump run inside the `--output` directory (default: `output/`).
+
+## Reading a netvar offset from JSON
+
+The simplest approach for C# is to deserialize `sdk/netvars.json` at startup and look up offsets by class and field name:
+
+```csharp
+// Load netvars from the SDK output
+var json = File.ReadAllText("output/sdk/netvars.json");
+var netvars = JsonSerializer.Deserialize<Dictionary<string, Dictionary<string, int>>>(json);
+
+// Get the m_iHealth offset
+int healthOff = netvars["C_CSPlayerPawn"]["m_iHealth"];
+int hp = ReadInt32(pawnPtr + healthOff);
+```
+
+The numeric values in `netvars.json` are the same as those in `netvars.hpp` — the JSON is the most convenient format for managed consumers.
+
+## Using signature constants
+
+`signatures/signatures.cs` is a C# static class generated on every run. It contains every resolved signature as a `const nint` grouped by module:
+
+```csharp
+using CS2Sdk.Signatures;
+
+// Use a resolved signature RVA
+nint createMoveAddr = (nint)clientBase + ClientDll.CCSGOInput__CreateMove;
+```
+
+## Build pinning
+
+`sdk/manifest.json` records the CS2 `build_number` for the dump. Read it at startup to guard against stale offsets:
+
+```csharp
+var manifest = JsonSerializer.Deserialize<JsonElement>(
+    File.ReadAllText("output/manifest.json"));
+uint dumpBuild = manifest.GetProperty("build_number").GetUInt32();
+
+if (dumpBuild != runningBuild) {
+    // Offsets may have moved — reload or bail.
+    return;
+}
+```
+
+## Workflow tips
+
+<Tip>
+  **Diff first.** On patch day, run with `--cache output/signatures/signatures.json` and check `diff.json` before shipping — it shows exactly which signatures shifted.
+
+  **Pin builds.** Check `manifest.json`'s `build_number` at startup and bail early on mismatch rather than letting a shifted offset cause a silent bad read.
+
+  **Only ship what you use.** Load only the fields from `netvars.json` that your cheat actually reads. Lazy loading the whole file is fine during development but slice it down before shipping.
+
+  **Don't edit the generated files.** They are overwritten on every dump run. Keep all custom wrappers and extension methods in separate files.
+</Tip>

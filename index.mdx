@@ -1,133 +1,73 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
-icon: 'star'
+title: "CS2 SDK: External Dumper for Counter-Strike 2"
+description: "CS2 SDK dumps offsets, schemas, interfaces, and signatures from a live CS2 process into C++, C#, Rust, Zig, and JSON — single binary, one run."
 ---
 
-## Setting up
+CS2 SDK (`cs2-sdk.exe`) is an all-in-one external dumper for Counter-Strike 2. Run it once while CS2 is open and it produces a dated session folder containing every offset, schema class, interface RVA, button hash, and signature your cheat or research project needs — in every language you might use.
 
-Get your documentation site up and running in minutes.
-
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Build the binary and run your first dump in two commands.
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Output layout" icon="folder-open" href="/output-layout">
+    Understand every file produced by a successful run.
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Consuming the SDK in C++" icon="file-code" href="/consuming/cpp">
+    Drop the generated headers into your project and start reading fields.
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="CLI reference" icon="terminal" href="/reference/cli">
+    Full flag reference with defaults and examples.
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## What CS2 SDK produces
 
-Everything you need to create world-class documentation.
+A single run performs two passes against the live CS2 process and writes everything into one dated folder:
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
+<CardGroup cols={2}>
+  <Card title="Offsets pass" icon="database">
+    Schema classes, interfaces, buttons, and raw module offsets in `cs`, `hpp`, `json`, `rs`, and `zig` formats — plus a typed C++ SDK amalgamation.
   </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
+  <Card title="Signatures pass" icon="magnifying-glass">
+    Every configured IDA-style pattern resolved to an RVA, with automatic diff against the previous session.
   </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
+  <Card title="Typed SDK headers" icon="brackets-curly">
+    `cs2sdk.hpp` — a single-include C++ header with `SCHEMA_FIELD` typed accessors, resolved interfaces, netvars, and signature constants.
   </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
+  <Card title="Vtable dump" icon="table">
+    Per-interface vtable indices with MSVC RTTI class-name recovery and method names sourced from the signature database.
   </Card>
-</Columns>
+</CardGroup>
 
-## Make your content agent ready
+## Get started
 
-Make your docs work for humans and AI agents alike.
+<Steps>
+  <Step title="Build the binary">
+    Clone the repo and run `cargo build --release`. Requires Rust 1.85+ and Windows 10/11.
+  </Step>
+  <Step title="Launch CS2">
+    Start Counter-Strike 2 and leave it running at the main menu or in-game.
+  </Step>
+  <Step title="Run as Administrator">
+    Execute `.\target\release\cs2-sdk.exe` in an elevated terminal. The tool attaches, dumps, and exits cleanly.
+  </Step>
+  <Step title="Use the output">
+    Find your output under the `output\` folder (or whatever path you passed to `--output`). The most useful single file for C++ consumers is `sdk\cs2sdk.hpp`.
+  </Step>
+</Steps>
 
-<Columns cols={2}>
-  <Card
-    title="Prompt component"
-    icon="robot"
-    href="/agent-ready/prompt"
-  >
-    Embed shareable AI prompts readers can copy or open in Cursor.
-  </Card>
-  <Card
-    title="Visibility"
-    icon="eye"
-    href="/agent-ready/visibility"
-  >
-    Show different content to humans and agents reading your docs.
-  </Card>
-  <Card
-    title="Contextual menu"
-    icon="bolt"
-    href="/agent-ready/contextual"
-  >
-    Give readers one-click access to Claude, ChatGPT, Cursor, and more.
-  </Card>
-  <Card
-    title="AI coding tools"
-    icon="wand-magic-sparkles"
-    href="/ai-tools/claude-code"
-  >
-    Set up Claude Code, Cursor, or Windsurf with Mintlify's skill.
-  </Card>
-</Columns>
+<Note>
+  CS2 SDK requires Administrator privileges when using the default `memflow-native` backend. The tool exits cleanly if CS2 is not running.
+</Note>
 
-## Need inspiration?
+## Language support
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+CS2 SDK emits offsets and signatures in multiple languages:
+
+| Language | Offsets / schemas | Signatures | Typed SDK |
+|----------|:-----------------:|:----------:|:---------:|
+| C++ | `buttons.hpp` | `signatures.hpp` | `cs2sdk.hpp`, `sdk/<module>.hpp` |
+| C# | `buttons.cs` | `signatures.cs` | — |
+| Rust | `buttons.rs` | `signatures.rs` | `cs2sdk.rs` |
+| Zig | `buttons.zig` | — | — |
+| JSON | `buttons.json`, `netvars.json` | `signatures.json` | `vtables.json` |

@@ -1,0 +1,82 @@
+---
+title: "C++ integration guide for the CS2 SDK typed headers"
+description: "Drop cs2sdk.hpp into your C++ internal cheat project, pin the CS2 build number, and access schema fields with typed SCHEMA_FIELD accessors."
+---
+
+This page walks you through integrating the generated C++ SDK into an internal cheat. You will copy the `offsets/` output folder into your project as a vendor directory, guard against stale builds with a `CS2_BUILD` check, then read and write schema fields using the typed `SCHEMA_FIELD` accessors that `cs2sdk.hpp` provides.
+
+## File layout
+
+Copy the contents of the `sdk/` output folder into your project tree and add `vendor/cs2sdk/` to your compiler's include path:
+
+```text
+my-cheat/
+├── src/
+└── vendor/cs2sdk/
+    ├── cs2sdk.hpp
+    ├── cs2sdk_macros.hpp
+    ├── netvars.hpp
+    ├── interfaces_sdk.hpp
+    ├── client_dll.hpp
+    ├── engine2_dll.hpp
+    └── ...
+```
+
+<Info>
+  Run `cs2-sdk.exe --output vendor/cs2sdk` to write directly into your vendor directory. Re-running after a CS2 update overwrites the previous headers in place — your compiler will immediately see the new offsets on the next build.
+</Info>
+
+## Pinning the build number
+
+Every generated header defines `CS2_BUILD`. Call a sanity check early in your loader to refuse attaching against the wrong CS2 patch before a shifted offset causes a crash:
+
+```cpp
+#include "cs2sdk.hpp"  // from sdk/cs2sdk.hpp, on your include path
+
+bool sanity_check(std::uint32_t running_build) {
+    if (cs2::CS2_BUILD != running_build) {
+        // Wrong patch — bail before you crash on a moved offset.
+        return false;
+    }
+    return true;
+}
+```
+
+## Worked example: read + write `m_iHealth`
+
+`SCHEMA_FIELD(int32_t, m_iHealth, 0x344)` expands to two inline accessors that produce a typed lvalue at `this + 0x344` — zero overhead in release builds. Cast your raw pointer to the generated class and call the accessor directly:
+
+```cpp
+#include "cs2sdk.hpp"  // from sdk/cs2sdk.hpp, on your include path
+
+void heal(void* pawn_ptr) {
+    auto* pawn = reinterpret_cast<cs2::sdk::client_dll::C_CSPlayerPawn*>(pawn_ptr);
+    if (pawn->m_iHealth() < 100) {
+        pawn->m_iHealth() = 100;
+    }
+}
+```
+
+## Worked example: resolve an interface
+
+Use `interfaces_sdk.hpp` to obtain a typed pointer to any registered Source 2 interface. Pass in whatever module base your loader already holds — `GetModuleHandleW(L"engine2.dll")`, your own enumerator, etc.:
+
+```cpp
+#include "interfaces_sdk.hpp"  // from sdk/interfaces_sdk.hpp, on your include path
+
+void* engine_client(std::uintptr_t engine2_base) {
+    return cs2::ifaces::engine2_dll::Source2EngineToClient001(engine2_base);
+}
+```
+
+## Workflow tips
+
+<Tip>
+  **Diff first.** On patch day, compare `signatures/diff.json` against your last pin before you ship — it shows exactly which fields shifted so you know what to re-test.
+
+  **Pin builds.** `static_assert(cs2::CS2_BUILD == ...);` is cheap insurance that the compiler catches a stale header at build time rather than at runtime.
+
+  **Only ship what you use.** `cs2sdk.hpp` is a convenient single-include amalgamation for development. For final builds, include only the `sdk/<module>.hpp` files your cheat actually touches to reduce compile times and binary surface area.
+
+  **Don't edit the generated files.** They are overwritten on every dump run. If you need a custom type or wrapper, add it in your own header and forward to the SDK header from there.
+</Tip>

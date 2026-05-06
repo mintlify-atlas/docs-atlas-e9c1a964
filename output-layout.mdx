@@ -1,0 +1,149 @@
+---
+title: "CS2 SDK dump output layout and per-file reference"
+description: "Every CS2 SDK run writes into a flat output directory. Learn what each file contains and which ones your project should depend on by use case."
+---
+
+Every successful run of CS2 SDK writes its output into the directory you specify with `--output` (default: `output`). The tool creates three subdirectories — `sdk/` for offset and schema data, `signatures/` for resolved patterns, and `logs/` for the run log — plus a `manifest.json` at the root.
+
+## Directory structure
+
+```text
+output/                              # --output directory (default: "output")
+├── manifest.json                    # session metadata
+├── logs/
+│   └── cs2-sdk.log                  # full TRACE-level run log
+├── sdk/
+│   ├── buttons.{cs,hpp,json,rs,zig}        # input/button hash table
+│   ├── cs2sdk.hpp                          # SDK: single-include C++ header
+│   ├── cs2sdk.rs                           # SDK: Rust amalgamation module
+│   ├── cs2sdk_macros.hpp                   # SCHEMA_FIELD macro family
+│   ├── netvars.{json,hpp}                  # SDK: split networked-field offsets
+│   ├── interfaces_sdk.hpp                  # SDK: typed interface accessor stubs
+│   ├── vtables.{json,hpp}                  # SDK: per-interface vtable indices
+│   ├── verified_features.{json,md,hpp}     # SDK: verified working features catalogue
+│   └── <module>.hpp                        # typed schema classes per module
+│
+└── signatures/
+    ├── signatures.json              # all resolved hits, one per line
+    ├── signatures.hpp               # cs2::signatures::<module>
+    ├── signatures.cs                # CS2Sdk.Signatures
+    ├── signatures.rs                # pub mod cs2_signatures
+    ├── SIGNATURES.md                # human-readable table
+    └── diff.json                    # delta vs previous session (when --cache is used)
+```
+
+<Note>
+  The dated session folder structure (`DD-MM-YY-CS2-SDK/`) described in the README is planned but not yet implemented. The current binary writes directly into the flat `--output` directory.
+</Note>
+
+## Which file should I use?
+
+<AccordionGroup>
+  <Accordion title="Internal cheat in C++">
+    Use **`sdk/cs2sdk.hpp`**.
+
+    This is the single-include amalgamation header. It combines typed `SCHEMA_FIELD` accessors (generated from the Source 2 schema), resolved interface pointers, split netvars, and signature constants into one file. Drop it into your project and `#include` it — no manual offset copy-paste required.
+
+    For finer control or smaller compilation units, the per-module typed classes live in `sdk/<module>.hpp`, and the `SCHEMA_FIELD` macro family is in `sdk/cs2sdk_macros.hpp`.
+  </Accordion>
+  <Accordion title="Internal cheat in C#">
+    Use **`sdk/netvars.hpp`** (for C++ field offsets) or the raw `signatures/signatures.cs` file for signature constants.
+
+    The C# namespace-structured output (`netvars.cs`) is available from `render_cs` in the source but not yet wired into the default dump output. Until that lands, C# consumers can reference the per-module constant values from the JSON files or the `.hpp` headers.
+  </Accordion>
+  <Accordion title="Anti-cheat or research feed">
+    Use **`sdk/*.json`** and **`signatures/signatures.json`**.
+
+    The JSON files are machine-readable and contain all offsets and resolved signature RVAs with full metadata including prototype strings.
+  </Accordion>
+  <Accordion title="Patch-day comparison">
+    Use **`signatures/diff.json`**.
+
+    When you pass `--cache <path-to-previous-signatures.json>`, the tool automatically computes a diff at the end of the signatures pass. `diff.json` records which signatures were added, removed, or shifted in RVA, and which patterns changed — giving you an immediate view of what broke between two CS2 builds.
+  </Accordion>
+  <Accordion title="Tooling that consumes raw constants">
+    Use **`signatures/signatures.json`** or the per-module typed headers in `sdk/<module>.hpp`.
+
+    The raw flat-offset constant emitters (`offsets.{hpp,cs,...}`, `interfaces.{hpp,cs,...}`) from the original `cs2-dumper` pipeline have been retired. All values they previously exposed are now available through the typed SDK headers and the signatures output.
+  </Accordion>
+</AccordionGroup>
+
+## sdk/ folder
+
+<AccordionGroup>
+  <Accordion title="cs2sdk.hpp — single-include C++ header">
+    The primary output for C++ cheat developers. Pulls in every per-module typed class header via `#include` and exposes all `SCHEMA_FIELD` accessors, interface pointers, netvars, and signature constants in one include. See [Using CS2 SDK in C++](/consuming/cpp) for a worked example.
+  </Accordion>
+  <Accordion title="cs2sdk.rs — Rust amalgamation module">
+    The Rust equivalent of `cs2sdk.hpp`. A single module file that re-exports all per-module offset constants and signature values as Rust `pub const` items. See [Using CS2 SDK in Rust](/consuming/rust) for usage.
+  </Accordion>
+  <Accordion title="cs2sdk_macros.hpp — SCHEMA_FIELD macro family">
+    Defines the `SCHEMA_FIELD` macro that expands to a pair of inline typed accessors at a given byte offset from `this`. Included automatically by `cs2sdk.hpp`.
+  </Accordion>
+  <Accordion title="netvars.{json,hpp} — split networked-field offsets">
+    Networked field offsets extracted from the schema and written separately. `netvars.json` is machine-readable; `netvars.hpp` provides `constexpr` C++ constants. Consumers that only need network state can include this file alone without pulling in the full schema dump.
+  </Accordion>
+  <Accordion title="interfaces_sdk.hpp — typed interface accessor stubs">
+    Typed factory stubs for each resolved Source 2 interface. Each stub accepts the target DLL base address and returns the interface pointer, making interface resolution ergonomic without manual `CreateInterface` calls.
+  </Accordion>
+  <Accordion title="vtables.{json,hpp} — vtable indices">
+    Per-interface vtable method indices, with MSVC RTTI class-name recovery. Slots whose RVAs match a known signature are labelled with the signature name. See [Vtable dumper](/reference/vtables) for details.
+  </Accordion>
+  <Accordion title="verified_features.{json,md,hpp} — verified working features">
+    A hand-curated catalogue of offsets, hooks, and ConVar tricks confirmed working in a live CS2 internal cheat against the current build. Covers features like no-smoke, flash removal, FOV override, sky tint, chams, and fullbright. Each entry includes the class name, field offset, type, and a plain-English note on gotchas. The `.md` version is human-readable; `.json` and `.hpp` are for programmatic consumption.
+  </Accordion>
+  <Accordion title="buttons.{cs,hpp,json,rs,zig} — input button hash table">
+    Symbolic names and hash values for every CS2 input button. Useful for mapping button names to their runtime identifiers across all supported languages.
+  </Accordion>
+  <Accordion title="<module>.hpp — typed schema classes">
+    One `.hpp` file per schema module (e.g. `client_dll.hpp`, `engine2_dll.hpp`). Each file contains the full typed class hierarchy for that module using `SCHEMA_FIELD` accessors. These are pulled into `cs2sdk.hpp` automatically.
+  </Accordion>
+</AccordionGroup>
+
+## signatures/ folder
+
+The signatures pass writes its output into the `signatures/` subdirectory.
+
+**`signatures.json`** is hand-formatted with one entry per line and columns aligned. Only successfully resolved entries are included — missing signatures are omitted. Each entry contains the signature name, module, resolve mode, virtual address, relative virtual address, IDA-style pattern, 24-byte prologue snapshot, auto-synthesised IDA pattern at the resolved RVA, and function prototype (where known):
+
+```json
+{
+  "total_scanned":  211,
+  "found":          193,
+  "missing":        18,
+  "elapsed_ms":     742,
+  "modules":        ["client.dll", "engine2.dll", "..."],
+  "signatures": [
+    { "name": "dwLocalPlayerController", "module": "client.dll", "resolve": "riprel", "va": 0x1812D34A0, "rva": 0x1934A0, "pattern": "48 8B 05 ? ? ? ? 48 85 C0 74 4F 48 8B 40" },
+    { "name": "CCSGOInput::GetUserCmd",  "module": "client.dll", "resolve": "rel32",  "va": 0x18119A610, "rva": 0x59A610, "pattern": "E8 ? ? ? ? 48 8B C8 48 8D 15"           }
+  ]
+}
+```
+
+<AccordionGroup>
+  <Accordion title="signatures.hpp — C++ namespace per module">
+    Signature RVAs as `inline constexpr` constants inside `cs2::signatures::<module>` namespaces.
+  </Accordion>
+  <Accordion title="signatures.cs — C# static class">
+    Signature constants inside a `CS2Sdk.Signatures` static class, one nested class per module.
+  </Accordion>
+  <Accordion title="signatures.rs — Rust module">
+    Signature constants as a `pub mod cs2_signatures` Rust module, with one submodule per CS2 DLL.
+  </Accordion>
+  <Accordion title="SIGNATURES.md — human-readable table">
+    A Markdown table listing every resolved signature with its name, module, resolve mode, RVA, and pattern. Useful for reviewing coverage at a glance.
+  </Accordion>
+  <Accordion title="diff.json — delta vs previous session">
+    Generated when you pass `--cache <path>` pointing to a previous `signatures.json`. Records entries that were added, removed, shifted in RVA, or had their patterns changed between the two sessions.
+  </Accordion>
+</AccordionGroup>
+
+## manifest.json
+
+`manifest.json` is written at the root of the output folder after all passes complete. It captures:
+
+- `generated_at` — RFC 3339 timestamp of the run
+- `process` — target process name (default: `cs2.exe`)
+- `build_number` — CS2 build number extracted during the offsets pass
+- `modules` — PE fingerprints (base address, image size, PE `TimeDateStamp`) for every major CS2 DLL
+- `stages` — per-pass status (`enabled`, `success`, `elapsed_ms`, output directory, and signature counts)

@@ -1,0 +1,79 @@
+---
+title: "Contributor guidelines for the CS2 SDK dumper project"
+description: "How to contribute to CS2 SDK: what kinds of PRs are welcome, the project roadmap, code style expectations, and how to report bugs."
+---
+
+CS2 SDK welcomes contributions of all sizes — from a single new signature to a new output format. This page explains what kinds of pull requests are accepted, summarizes the planned work from the project backlog, and describes how to file a useful bug report.
+
+## What's welcome
+
+The most impactful contributions are:
+
+- **New signatures** — drop them in [`src/signatures/database.rs`](https://github.com/scros22/cs2-universal-offsets/blob/main/src/signatures/database.rs) inside the appropriate comment group for the target module. See [Add a new signature](/contributing/adding-signatures) for the full workflow.
+- **New output formats** — the existing emitters (`cs`, `hpp`, `rs`, `zig`, `json`) live in `src/output/`. A new format that follows the same conventions is a straightforward addition.
+- **Bug reports** — attach `cs2-sdk.log` from your session folder (see [Bug reports](#bug-reports) below).
+
+### Community integrations
+
+If you maintain a community CS2 SDK and want your offset or signature set merged in, open an issue describing what you have. Maintainers can discuss the merge path there.
+
+<Info>
+  The active backlog lives in [`TASKS.md`](https://github.com/scros22/cs2-universal-offsets/blob/main/TASKS.md). Anything listed there is fair game to pick up — items are intentionally kept small and self-contained. Larger changes should be discussed in an issue first.
+</Info>
+
+## Roadmap
+
+The planned work is organized into the following categories. Items marked as in-progress are already being worked on; everything else is available to pick up.
+
+<AccordionGroup>
+  <Accordion title="Scanner improvements">
+    - **Multi-pattern single-pass scan** — group signatures per module and walk `.text` once instead of once per signature. This will significantly cut scan time as the signature count grows.
+    - **SIMD pattern matcher** — AVX2 Boyer-Moore-Horspool with a wildcard mask. Most useful when the signature count exceeds ~1 000 entries.
+    - **`iced-x86` string-ref walk-back** — replace the current byte heuristics for locating function prologues from string cross-references with proper x86 disassembly using `iced-x86`.
+    - **Auto-pattern generator** — given a known virtual address, walk forward N bytes, mask RIP-relative and immediate operands, and emit a stable IDA-style pattern automatically.
+    - **Per-signature confidence score** — measure uniqueness within the section and surface it in `signatures.json`.
+    - **`--strict` flag** — fail the run on any ambiguous (`matches > 1`) hit.
+    - **Two-stage shader-pipeline report mode** — report compile-queue batch events and static-combo cache outcomes (`FindOrCreateStaticComboDataInCache`).
+  </Accordion>
+
+  <Accordion title="Output additions">
+    - **`signatures.zig` emitter** — bring Zig coverage to the signature pass to match the existing offset pass.
+    - **`signatures.proto` / `.fbs`** — Protocol Buffers and FlatBuffers output for cross-language consumers.
+    - **HTML report** — sortable table with missing entries highlighted in red and diff highlights between sessions.
+  </Accordion>
+
+  <Accordion title="Schema and offsets work">
+    - **Schema metadata investigation** — `netvars.{json,hpp,cs}` currently emit empty for build 14152 because `network_value` is null for every entry. The walker logic in `src/analysis/schemas.rs::read_class_binding_metadata` likely needs an offset update for the current build.
+    - **ConVar dumper** — walk the `g_pCVar` registration list and emit each ConVar's name, flags, and default value.
+    - **GameEvent registry dumper** — walk `CGameEventManager` and emit each event's name and field schema.
+    - **Interface-version drift detector** — flag any `XXX_VERSIONXXX` string change between sessions.
+    - **Resource system extension mapping** — document the compiled-asset load contract for `vmat_c`, `vfx`, and `vcs` family assets.
+  </Accordion>
+
+  <Accordion title="Memory and backend">
+    - **First-class DMA CLI presets** — `--backend dma|kvm|native` to select the memflow connector without needing to remember connector names.
+    - **Offline replay** — `--from-dump <path>` to run against a previously captured full-module dump without a live CS2 process.
+    - **Parallel module scans** — use `rayon` once the multi-pattern single-pass path lands to scan multiple modules concurrently.
+  </Accordion>
+
+  <Accordion title="Code quality">
+    - **Typed errors** — replace stringly-typed error paths with `thiserror`-based typed errors at module boundaries.
+    - **Snapshot tests** — test the scanner against a tiny pinned CS2 module dump checked into `tests/fixtures/`.
+    - **Structured logging** — `tracing` with a JSON log mode behind a flag.
+    - **Dead code cleanup** — resolve remaining `dead_code` warnings in `source2/` (legacy tier1 helpers).
+  </Accordion>
+</AccordionGroup>
+
+## Bug reports
+
+When filing a bug, attach the log file from your session folder:
+
+```text
+dumps/<DATE>-CS2-SDK/logs/cs2-sdk.log
+```
+
+The log captures attach errors, per-module scan results, resolver failures, and timing. Without it, reproducing memory-read or pattern-match issues is significantly harder.
+
+<Tip>
+  Run with `-vv` or `-vvv` to increase log verbosity before reproducing the issue. The extra output is written to the same `cs2-sdk.log` file.
+</Tip>

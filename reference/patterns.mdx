@@ -1,0 +1,163 @@
+---
+title: "IDA-style byte pattern syntax and resolver kinds"
+description: "CS2 SDK uses IDA-style byte patterns with wildcard support. Learn the pattern syntax, the four resolver kinds, and why section-aware scanning matters."
+---
+
+The signature scanner accepts classic IDA-style byte patterns and applies one of four resolver transformations to turn a raw match address into a usable relative virtual address (RVA). Understanding the syntax rules and resolver math lets you write precise, patch-resilient entries for `src/signatures/database.rs`.
+
+## Pattern syntax
+
+Patterns are space-separated hex tokens. Each token is one of:
+
+- A **two-digit hex byte** (e.g. `48`, `E8`) — case-insensitive, no `0x` prefix.
+- A **full wildcard** (`?` or `??`) — matches any byte value.
+- A **half-wildcard nibble** (e.g. `?0`, `4?`) — the nibble marked `?` matches any value; the concrete nibble must match exactly.
+
+```text
+48 89 5C 24 ?? 48 89 74 24 ?? 57 48 83 EC ?0
+```
+
+<AccordionGroup>
+  <Accordion title="Syntax rules">
+    - Tokens must be exactly two hex characters (or `?` / `??`).
+    - Whitespace between tokens is irrelevant — single spaces, double spaces, and tabs are all accepted.
+    - Do not write `0x` prefixes: `48`, not `0x48`.
+    - Parsing is handled by [pelite](https://docs.rs/pelite), so any pattern that round-trips through pelite's IDA-style parser is valid.
+  </Accordion>
+  <Accordion title="When to use half-wildcard nibbles">
+    Half-wildcard nibbles are useful when only a register encoding changes between builds. For example, `?0` matches the low nibble of a ModRM byte that encodes a destination register, leaving the opcode constant while ignoring which register was picked by the compiler.
+  </Accordion>
+</AccordionGroup>
+
+## Resolver kinds
+
+Once a pattern matches, the **match address** is the byte offset of the first byte of the pattern inside the module's `.text` section. That address is rarely the final value you want — the interesting RVA is usually encoded as a displacement inside the instruction the pattern landed on. The `ResolveKind` enum controls how the scanner derives the final RVA from the match address.
+
+<Note>
+  The `ResolveKind` enum is defined in `src/signatures/mod.rs`. All four variants are shown below.
+</Note>
+
+### None — match address itself
+
+```rust
+ResolveKind::None
+```
+
+Use `None` when the match address itself is the address you want — for example, the first byte of a function you intend to hook directly.
+
+```text
+RVA = match_rva
+```
+
+No arithmetic is performed. `extra_off` is still added to the virtual address at runtime if set.
+
+### Rel32 — relative 32-bit displacement
+
+```rust
+ResolveKind::Rel32 { rel_off: 1 }
+```
+
+Used for `E8 xx xx xx xx` (`call rel32`) and `E9 xx xx xx xx` (`jmp rel32`) instructions. The displacement is a signed 32-bit little-endian value. The "next instruction" anchor sits at `match + rel_off + 4`.
+
+```text
+disp = i32::from_le_bytes(text[match_rva + rel_off ..][..4])
+RVA  = match_rva + rel_off + 4 + disp
+```
+
+`rel_off` is the byte offset from the match address to the displacement field. For a pattern that starts on the `E8` or `E9` opcode itself, `rel_off = 1`.
+
+### RipRel — RIP-relative addressing
+
+```rust
+ResolveKind::RipRel { rel_off: 3 }
+```
+
+Used for RIP-relative `lea` and `mov` instructions — for example, `48 8D 0D xx xx xx xx` (`lea rcx, [rip + disp32]`) and `48 8B 05 xx xx xx xx` (`mov rax, [rip + disp32]`). The displacement arithmetic is identical to `Rel32`; the variant name exists to make call sites self-documenting and to leave room for RIP-specific validation in future versions.
+
+```text
+disp = i32::from_le_bytes(text[match_rva + rel_off ..][..4])
+RVA  = match_rva + rel_off + 4 + disp
+```
+
+For a three-byte ModRM-prefixed instruction like `48 8D 0D`, the displacement byte starts at offset `3`, so `rel_off = 3`.
+
+### StringRef — cross-reference from a string literal
+
+```rust
+// In Signature struct: needle is the literal string, resolve is the unit variant
+Signature {
+    name:      "MyFunction",
+    module:    "client.dll",
+    needle:    "MoveType_t",       // literal string, not a byte pattern
+    resolve:   ResolveKind::StringRef,
+    extra_off: 0,
+    prototype: "",
+}
+```
+
+`StringRef` is a meta-resolver. Instead of matching bytes in `.text` directly, it:
+
+<Steps>
+  <Step title="Locate the string in .rdata">
+    The scanner searches the module's `.rdata` section for the null-terminated `needle` string. It verifies that each occurrence is a genuine string start (preceded by a null byte or at the section boundary).
+  </Step>
+  <Step title="Synthesise a LEA pattern">
+    For each string RVA found, the scanner searches `.text` for a `lea rXX, [rip + disp32]` instruction whose displacement resolves to that string RVA.
+  </Step>
+  <Step title="Walk back to the function prologue">
+    From the LEA instruction the scanner walks backwards through `0xCC` (int3) padding to find the enclosing function's prologue byte, which becomes the resolved RVA.
+  </Step>
+</Steps>
+
+<Tip>
+  `StringRef` is robust across patches because debug and schema string literals almost never change. Use it for symbols that are referenced by exactly one string — schema names, debug names, and similar constants.
+</Tip>
+
+<Warning>
+  `StringRef` entries are never satisfied from the warm cache because there is no stable byte pattern at `match_rva` to re-validate. They always perform a full scan.
+</Warning>
+
+## Section-aware scanning
+
+The scanner only walks bytes inside a specific PE section of a specific module:
+
+| Pattern kind | Section scanned |
+|---|---|
+| All byte patterns | `.text` (with `.rdata` fallback for globals) |
+| `StringRef` needle lookup | `.rdata` |
+
+Restricting the scan to the correct section matters for three reasons:
+
+1. **Speed** — `.text` is a small fraction of the full image; scanning less memory is significantly faster.
+2. **False-positive elimination** — data sections contain byte sequences that coincidentally match code patterns. Scanning only `.text` for code patterns avoids bogus hits.
+3. **Cache validation** — the warm-cache pass re-validates a cached `match_rva` by checking the pattern bytes at that exact location in the live module. This only works reliably if the address was always inside the same section.
+
+## Adding your own pattern
+
+To add a new pattern to the database:
+
+<Steps>
+  <Step title="Find a unique byte sequence">
+    Open the function in IDA or Ghidra. Pick 12–20 bytes that are unique and likely stable across builds — function prologues and unique constant loads work well.
+  </Step>
+  <Step title="Wildcard the unstable bytes">
+    Wildcard bytes that change between builds: offsets, immediates, and register encodings. Half-wildcard nibbles help when only the register field varies.
+  </Step>
+  <Step title="Add the entry">
+    Add a `Signature` entry to `src/signatures/database.rs` with the appropriate `ResolveKind`:
+
+    ```rust
+    Signature {
+        name:      "CL_RecvUserCmds",
+        module:    "client.dll",
+        needle:    "48 89 5C 24 ?? 48 89 74 24 ?? 57 48 81 EC 50 02 ?? ??",
+        resolve:   ResolveKind::None,
+        extra_off: 0,
+        prototype: "",
+    }
+    ```
+  </Step>
+  <Step title="Verify">
+    Run the dumper and check that the resolved RVA matches the expected address in your disassembler.
+  </Step>
+</Steps>

@@ -1,0 +1,131 @@
+---
+title: "cs2-sdk.exe command-line flags and usage examples"
+description: "Complete reference for every cs2-sdk.exe command-line flag: connector selection, output directory, file types, pass control, verbosity, and caching."
+---
+
+`cs2-sdk.exe` is the single binary that drives both the offsets pass and the signatures pass. Every aspect of a run — from which memflow connector to use, to which output formats to emit, to whether to skip an entire stage — is controlled through command-line flags. This page documents every flag the binary accepts.
+
+## Usage
+
+```text
+cs2-sdk.exe [OPTIONS]
+```
+
+## Flags
+
+### Connector
+
+<ParamField query="-c, --connector" type="string" default="native (memflow-native)">
+  The memflow connector name to use when attaching to the CS2 process. Omit this flag on Windows to use the built-in `memflow-native` backend, which reads the live process directly. For DMA or virtualization setups, pass the connector name explicitly (e.g., `pcileech`, `kvm`).
+</ParamField>
+
+<ParamField query="-a, --connector-args" type="string">
+  Extra arguments forwarded verbatim to the connector. The format is connector-specific. Leave unset unless your connector requires additional parameters.
+</ParamField>
+
+### Output
+
+<ParamField query="-o, --output" type="string" default="output">
+  The output directory where all generated files are written. The tool creates `sdk/`, `signatures/`, and `logs/` subdirectories inside this path, plus a `manifest.json` at the root. Re-running overwrites the previous contents.
+</ParamField>
+
+<ParamField query="-f, --file-types" type="string" default="hpp,json,rs,zig">
+  Comma-separated list of file formats to emit for the **buttons** output (the symbolic CS2 input button table). Valid values are `cs`, `hpp`, `json`, `rs`, and `zig`. The typed SDK headers (`cs2sdk.hpp`, `netvars.hpp`, etc.), signatures, and other outputs are always written in their fixed formats regardless of this flag.
+</ParamField>
+
+<ParamField query="-i, --indent-size" type="number" default="4">
+  The number of spaces used for indentation in generated source files (C++, C#, Rust, Zig). Has no effect on JSON output.
+</ParamField>
+
+### Process
+
+<ParamField query="-p, --process-name" type="string" default="cs2.exe">
+  The target process name to attach to. Override this if you are running CS2 under a different executable name.
+</ParamField>
+
+### Pass control
+
+<ParamField query="--skip-offsets" type="boolean" default="false">
+  Skip the offsets, interfaces, schemas, and buttons pass entirely. Only the signature scanner will run. Use this when you only need an updated `signatures.json` and want to avoid the time spent on schema walking.
+</ParamField>
+
+<ParamField query="--skip-signatures" type="boolean" default="false">
+  Skip the signature scanner pass entirely. Only the offset/schema/interface/button pass will run. Use this when you only need refreshed offset constants and do not need resolved function addresses.
+</ParamField>
+
+### Verbosity
+
+<ParamField query="-v / -vv / -vvv" type="flag">
+  Controls the log level printed to the terminal. By default (no `-v` flag) only warnings are shown.
+
+  | Flag | Terminal level |
+  |------|----------------|
+  | _(none)_ | Warn |
+  | `-v` | Info |
+  | `-vv` | Debug |
+  | `-vvv` | Trace |
+</ParamField>
+
+### Audio
+
+<ParamField query="--no-sound" type="boolean" default="false">
+  Silence all audio cues. By default the binary plays short beeps on start, progress, success, and failure. Pass this flag in CI or headless environments.
+</ParamField>
+
+### Caching
+
+<ParamField query="--cache" type="string">
+  Path to a `signatures.json` from a previous session to use as a warm cache. When the cached `match_rva` still matches the recorded pattern bytes in the live process, the signature is satisfied without a full module scan — dramatically speeding up subsequent runs after a minor CS2 update where most signatures are unchanged. If omitted, the tool automatically detects and loads the most recent session found under `--output`.
+</ParamField>
+
+<ParamField query="--no-cache" type="boolean" default="false">
+  Disable the automatic previous-session cache detection. The signature scanner will perform a full cold scan of every module even if a valid previous session exists under `--output`.
+</ParamField>
+
+## Usage examples
+
+<CodeGroup>
+
+```powershell Default run
+.\cs2-sdk.exe
+```
+
+```powershell Custom output directory + verbose logging
+.\cs2-sdk.exe --output D:\cs2-sdk -vv
+```
+
+```powershell Signatures pass only
+.\cs2-sdk.exe --skip-offsets
+```
+
+```powershell Offsets pass only
+.\cs2-sdk.exe --skip-signatures
+```
+
+```powershell DMA / KVM backend
+.\cs2-sdk.exe --connector kvm
+```
+
+```powershell Explicit warm cache
+.\cs2-sdk.exe --cache .\dumps\prev\signatures\signatures.json
+```
+
+```powershell No cache, no sound
+.\cs2-sdk.exe --no-cache --no-sound
+```
+
+```powershell JSON output only
+.\cs2-sdk.exe --file-types json
+```
+
+</CodeGroup>
+
+## Notes
+
+<Warning>
+  The default `memflow-native` connector requires **Administrator privileges**. Launch your terminal as Administrator before running `cs2-sdk.exe`, or attach via a DMA connector such as `pcileech` that does not have this requirement.
+</Warning>
+
+<Tip>
+  Regardless of the `-v` setting, the full **TRACE-level** run log is always written to `logs/cs2-sdk.log` inside your output directory. If you need to diagnose a failed pass or a missed signature, that file contains every detail.
+</Tip>

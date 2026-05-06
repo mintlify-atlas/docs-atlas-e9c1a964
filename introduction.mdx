@@ -1,0 +1,64 @@
+---
+title: "CS2 SDK: All-in-One External Counter-Strike 2 Dumper"
+description: "CS2 SDK dumps offsets, schemas, interfaces, and signatures from a live CS2 process into C++, C#, Rust, and Zig in a single binary run."
+---
+
+CS2 SDK is a single Rust binary — `cs2-sdk.exe` — that performs both dumping passes a CS2 developer normally needs: an offsets pass that walks the Source 2 runtime schema, and a signatures pass that resolves IDA-style byte patterns against live PE sections. Both passes read each target DLL from game memory once and write their results into a single dated session folder, giving you a consistent, diffable snapshot of every offset and signature after each CS2 patch.
+
+## What CS2 SDK does
+
+CS2 SDK operates in two sequential passes against the same memory snapshot:
+
+**Offsets pass** — powered by [memflow](https://github.com/memflow/memflow) for memory access and [pelite](https://github.com/CasualX/pelite) for PE parsing, this pass walks the Source 2 runtime schema to extract typed class hierarchies and field offsets, enumerates interface RVAs, dumps input button hashes, and produces a full typed C++ SDK. Output includes `cs2sdk.hpp` (single-include C++ header), `cs2sdk.rs` (Rust amalgamation), `netvars.{json,hpp}`, `interfaces_sdk.hpp`, and `vtables.{json,hpp}`, all written to `sdk/`.
+
+**Signatures pass** — a custom PE/section-aware scanner with IDA-style patterns. Each signature entry opts into one of four resolution modes (`None`, `Rel32`, `RipRel`, `StringRef`), and the scanner short-circuits on the first hit per signature. Results are written to `signatures.json` (with resolved RVAs, VAs, pattern bytes, and optional prototypes), plus `signatures.hpp`, `signatures.cs`, `signatures.rs` (emitting the IDA pattern string as a compile-time constant for runtime scanning), and `SIGNATURES.md`.
+
+Because both passes share one memory snapshot, each target DLL is read exactly once — no duplicate attach/detach cycles.
+
+## Key capabilities
+
+<CardGroup cols={2}>
+  <Card title="Source 2 schema walking" icon="diagram-project">
+    Walks the Source 2 runtime schema to extract typed class hierarchies, field offsets, and enum values across all loaded schema modules.
+  </Card>
+  <Card title="IDA-style signature scanner" icon="magnifying-glass">
+    Section-aware scanner supporting `None`, `Rel32`, `RipRel`, and `StringRef` resolution modes. `StringRef` locates a literal string in `.rdata`, finds the `LEA` that references it, and walks back to the enclosing function prologue — resilient to prologue-byte changes between patches.
+  </Card>
+  <Card title="Multi-language output" icon="code">
+    Every offset and signature is emitted in C++ (`.hpp`), C# (`.cs`), Rust (`.rs`), Zig (`.zig`), and JSON (`.json`) so you can integrate without manual transcription.
+  </Card>
+  <Card title="Vtable dumps with RTTI recovery" icon="table">
+    Dumps per-interface vtable indices with MSVC RTTI class-name recovery. Vtable slots whose RVAs match a known signature are automatically labelled with that signature's name.
+  </Card>
+</CardGroup>
+
+## Requirements
+
+<Note>
+  CS2 SDK requires all four conditions to be met before you run it:
+
+  - **Rust 1.85+** (edition 2024) to build from source
+  - **Windows 10 or 11** — the default `memflow-native` backend is Windows-only
+  - **Administrator privileges** — required by `memflow-native` to attach to the CS2 process
+  - **CS2 running** — the tool exits cleanly if it cannot find `cs2.exe`
+</Note>
+
+## Credits
+
+CS2 SDK stands on the shoulders of two open-source projects:
+
+- **[a2x](https://github.com/a2x)** — the original `cs2-dumper`. The offset, schema, interface, and button extraction in CS2 SDK is a faithful port of his pelite-based pipeline: same scanners, same output formats, same well-tested logic.
+- **[Eternityforks](https://github.com/Eternityforks)** — the signature scanner draws directly from his `EnhancedScanner` design: section-aware scanning, `rel32`/`rip-rel` resolution, and string-ref → function-prologue walk-back.
+
+Additional credit to **[kauht](https://github.com/kauht)** for sharing a practical standalone `GeneratePrimitives` implementation that helped validate signature coverage for runtime material creation paths.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Build the binary and run your first dump in two commands.
+  </Card>
+  <Card title="Output layout" icon="folder-open" href="/output-layout">
+    Understand every file produced by a successful run and which one your project should depend on.
+  </Card>
+</CardGroup>

@@ -1,0 +1,99 @@
+---
+title: "Source 2 schema system walking internals"
+description: "How CS2 SDK walks the Source 2 runtime schema to produce typed C++ classes, netvar splits, and interface accessors without PDB files."
+---
+
+Source 2 embeds enough runtime metadata to fully reconstruct every networked class layout, every enum, and every metadata attribute without symbol files. The schema walker reads this data from the live process, translates it into typed Rust structures, and feeds two parallel emitters that produce both offset-only constants and full typed C++ SDK headers.
+
+## The schema system overview
+
+When the engine starts it builds a `CSchemaSystem` singleton. Each loaded module that participates in the schema system registers a `CSchemaSystemTypeScope` — one scope per DLL. Inside each scope lives a `CUtlTSHash` keyed by class or enum name, mapping to either a `CSchemaClassBinding` or a `CSchemaEnumBinding`.
+
+For every networked class the engine populates:
+
+- **Class name** — the C++ class name as declared with `SCHEMA_CLASS()`.
+- **Parent name** — single-inheritance parent, optional.
+- **Field list** — one entry per field: name, type-name string, and byte offset within the instance.
+- **Metadata list** — a variable-length list of compile-time attributes. The two most important are:
+  - `MNetworkVarNames(name, type)` — marks a field as networked.
+  - `MNetworkChangeCallback(name)` — declares a change-notification callback for a field.
+
+Enums follow the same structure: a name, an alignment, and a member list of `(name, value)` pairs.
+
+## How the walker works
+
+The walker lives in `src/source2/` and operates in three layers:
+
+<Steps>
+  <Step title="PE parsing to locate the schema system">
+    [pelite](https://docs.rs/pelite) parses the loaded PE images to locate the `g_pSchemaSystem` and `SchemaSystemTypeScope` symbols by IDA-style signature (see `src/analysis/offsets.rs` for the patterns). This produces the base addresses needed for the next step.
+  </Step>
+  <Step title="memflow reads to enumerate bindings">
+    memflow chases the `CUtlTSHash` hash chain in the live process to enumerate every `CSchemaClassBinding` and `CSchemaEnumBinding` for each type scope. The walker reads the field list and metadata list for every binding it finds.
+  </Step>
+  <Step title="Type translation">
+    `src/analysis/schemas.rs` flattens the raw binding data into the `Class { name, parent_name, fields, metadata }` and `Enum { name, alignment, size, members }` shapes that the emitters consume.
+  </Step>
+</Steps>
+
+## Two emitter types
+
+Two parallel emitters consume the translated schema data and produce different outputs for different audiences:
+
+| Emitter | Output | Audience |
+|---|---|---|
+| `output::schemas` (original) | `<module>.{cs,hpp,json,rs,zig}` — constants only | Offset-only consumers and external dumpers |
+| `output::sdk_classes` (added in v1.2) | `sdk/<module>.hpp` — typed classes | Cheat developers using the full SDK |
+
+The **original constants emitter** writes simple `constexpr` offset constants:
+
+```cpp
+namespace cs2_dumper::schemas::client_dll::C_CSPlayerPawn {
+    constexpr std::ptrdiff_t m_iHealth = 0x344;
+}
+```
+
+The **SDK class emitter** writes full typed class definitions with inline accessors:
+
+```cpp
+namespace cs2::sdk::client_dll {
+    class C_CSPlayerPawn : public C_BasePlayerPawn {
+    public:
+        SCHEMA_FIELD(std::int32_t, m_iHealth, 0x344) // int32
+    };
+}
+```
+
+`SCHEMA_FIELD` is defined in `sdk/cs2sdk_macros.hpp`. It expands to a pair of inline accessors that produce a typed lvalue at `reinterpret_cast<std::byte*>(this) + offset`. Release builds compile this to zero overhead.
+
+## Netvar splitting
+
+Networked fields are a small, strictly-defined subset of all schema fields. The `output::netvars` emitter filters the schema for classes that carry one or more `MNetworkVarNames` metadata entries and writes a separate `netvars.{json,hpp,cs}` file.
+
+<Tip>
+  Cheats that only need network state can include `netvars.hpp` alone and skip the much larger full schema dump. This keeps compile times low and avoids pulling in unrelated offsets.
+</Tip>
+
+## Metadata enum
+
+The walker recognises three metadata attribute kinds:
+
+```rust
+pub enum ClassMetadata {
+    NetworkChangeCallback { name: String },
+    NetworkVarNames       { name: String, type_name: String },
+    Unknown               { name: String },
+}
+```
+
+`Unknown` preserves the raw attribute name for unrecognised attributes. JSON consumers receive the attribute name intact so future dumper versions can decode additional attributes without breaking existing consumers.
+
+## Source reference
+
+| Concern | File |
+|---|---|
+| Walk schema system, scopes, and hash table | `src/source2/` |
+| Translate raw bindings to public structs | `src/analysis/schemas.rs` |
+| Original constants emitter (per-module) | `src/output/schemas.rs` |
+| SDK class emitter (per-module) | `src/output/sdk_classes.rs` |
+| Netvar split emitter | `src/output/netvars.rs` |

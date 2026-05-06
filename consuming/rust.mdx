@@ -1,0 +1,65 @@
+---
+title: "Integrating the CS2 SDK Rust module into your crate"
+description: "Import the generated cs2sdk.rs Rust module into your cheat crate. Access signature constants and offset values as Rust pub const items."
+---
+
+This page covers consuming the dumper output from a Rust cheat crate. The dumper emits `cs2sdk.rs` as a Rust amalgamation module and `signatures/signatures.rs` as a separate signatures module, both containing `pub const` items you can reference directly. No build script or proc-macro is required — drop the file into your source tree and declare it as a module.
+
+## Which files to use
+
+| File | Purpose |
+| ---- | ------- |
+| `sdk/cs2sdk.rs` | Rust amalgamation — re-exports all per-module offset constants |
+| `signatures/signatures.rs` | Signature constants resolved at dump time (`pub mod cs2_signatures`) |
+
+Both files are written into the `--output` directory (default: `output/`) on every successful run.
+
+## Declaring the module
+
+Place `cs2sdk.rs` alongside your crate sources and declare it with `mod`:
+
+```rust
+mod cs2sdk;   // copy sdk/cs2sdk.rs into your project
+```
+
+For signature patterns, `signatures.rs` lives in the `signatures/` directory:
+
+```rust
+mod signatures;       // copy signatures/signatures.rs into your project
+
+use signatures::client_dll;
+```
+
+## Using a signature constant
+
+Each constant in `signatures.rs` is an IDA-style byte pattern string (`pub const X: &str`) — not a resolved address. Pass it to your runtime pattern scanner to locate the function in the live process:
+
+```rust
+fn find_create_move(client_bytes: &[u8], client_base: usize) -> Option<usize> {
+    let pattern = signatures::client_dll::CCSGOInput__CreateMove;
+    // Scan client_bytes for the pattern, return base + rva
+    your_pattern_scanner(client_bytes, pattern).map(|rva| client_base + rva)
+}
+```
+
+The `signatures.json` file contains the already-resolved RVAs if you want pre-computed addresses rather than runtime scanning.
+
+## Building a typed Rust SDK
+
+The generated files are intentionally minimal: flat `pub const` items with no type information beyond the numeric value. To build a fully typed SDK on top of them:
+
+<Note>
+  Treat `signatures.rs` and the per-module offset constants in `cs2sdk.rs` as the foundation layer. Add thin newtype wrappers in your own crate modules — one wrapper per schema class — and implement field accessors that accept a base pointer and return a typed value. This mirrors what the C++ `SCHEMA_FIELD` macro does, but in safe (or unsafe) Rust on your own terms. The generated files stay untouched and can be swapped out on the next dump without touching your wrapper layer.
+</Note>
+
+## Workflow tips
+
+<Tip>
+  **Diff first.** On patch day, compare `signatures/diff.json` against your last pin before you ship — it shows exactly which signatures shifted so you know which constants to re-validate.
+
+  **Pin builds.** The `offsets/info.json` file in each session records the `build_number`. Read it in a test or build script and assert it matches what you expect before shipping.
+
+  **Only ship what you use.** Import specific constants by name rather than relying on the wildcard glob in production code. This keeps your binary's symbol surface small and makes breakage after a re-dump immediately visible as a compile error.
+
+  **Don't edit the generated files.** They are overwritten on every dump run. Keep all custom wrappers, newtypes, and helper functions in separate modules inside your own crate.
+</Tip>

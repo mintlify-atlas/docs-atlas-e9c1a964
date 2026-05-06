@@ -1,0 +1,133 @@
+---
+title: "Signature scanner pipeline from entry to output"
+description: "How CS2 SDK resolves IDA-style patterns to RVAs: module attach, section slicing, pattern matching, resolver application, warm cache, and language output."
+---
+
+The signature pass reads a catalog of named byte patterns from `src/signatures/database.rs`, scans each pattern against the appropriate PE section of the live CS2 process, applies a resolver to compute the final RVA, and writes the results to five parallel consumer files. A warm-cache path lets subsequent runs on the same build skip full module sweeps for patterns whose anchors have not moved.
+
+## Anatomy of a signature entry
+
+Every entry in the catalog is a `Signature` struct with five fields:
+
+```rust
+Signature {
+    name:      "CL_RecvUserCmds",
+    module:    "client.dll",
+    needle:    "48 89 5C 24 ?? 48 89 74 24 ?? 57 48 81 EC 50 02 ?? ??",
+    resolve:   ResolveKind::None,
+    extra_off: 0,
+    prototype: "",
+}
+```
+
+| Field | Purpose |
+|---|---|
+| `name` | Symbol-style identifier; becomes a constant in every emitter. |
+| `module` | The DLL that contains the pattern (e.g. `"client.dll"`). |
+| `needle` | IDA-style byte pattern, or the literal string for `StringRef` entries. |
+| `resolve` | How to derive the final RVA from the match address (`None`, `Rel32`, `RipRel`, `StringRef`). |
+| `extra_off` | Signed byte offset added to the resolved virtual address at runtime. |
+| `prototype` | Optional IDA / Hex-Rays C-style function prototype, emitted into all output artefacts. |
+
+<Note>
+  See [IDA-style pattern syntax and resolution](/reference/patterns) for a full description of the `ResolveKind` variants and the displacement arithmetic.
+</Note>
+
+## Scan pipeline
+
+For each entry the scanner executes five steps in order:
+
+<Steps>
+  <Step title="Resolve the module">
+    The scanner looks up the module by name in the live process via memflow. Each unique module image is loaded once and cached in memory so all signatures targeting the same DLL share a single read.
+  </Step>
+  <Step title="Slice the section bytes">
+    pelite locates the requested PE section (`.text` for code patterns, `.rdata` for `StringRef` needle lookups) and returns a byte slice. Scanning only the target section eliminates false positives from data regions and speeds up the search.
+  </Step>
+  <Step title="Run find_all_pattern">
+    The scanner calls `find_all_pattern` to count every occurrence of the pattern in the section and pick the canonical first match. The match count is recorded in `SignatureHit::matches` so callers can identify ambiguous patterns that need tightening.
+  </Step>
+  <Step title="Apply the resolver">
+    The appropriate `ResolveKind` arithmetic is applied to the first match offset to produce the final RVA. For `StringRef` entries the scanner synthesises a LEA pattern, finds the `.text` xref, and walks back to the enclosing function prologue.
+  </Step>
+  <Step title="Stash RVA and VA">
+    The module base is added to the RVA to produce the runtime virtual address. Both values are stored in `SignatureHit { rva, va, match_rva, match_va, ... }` for downstream consumers.
+  </Step>
+</Steps>
+
+## Failure handling
+
+A scan failure produces a `SignatureHit` with `found: false` and `error: Some(message)` rather than aborting the run. One broken pattern does not affect any other entry. Consumers can inspect the error field in `signatures.json` to diagnose individual misses.
+
+```json
+{
+  "name": "CL_RecvUserCmds",
+  "found": false,
+  "error": "pattern not found"
+}
+```
+
+<Warning>
+  If `matches` is greater than `1` in the output, the pattern is ambiguous — it matched more than one location in `.text`. The scanner picks the first match and logs a warning, but you should tighten the pattern to ensure uniqueness.
+</Warning>
+
+## Warm cache
+
+A cache file is simply a previous `signatures.json`. Load it before scanning, or pass `--cache <path>` on the command line:
+
+```rust
+let cache = SignatureCache::load("output/signatures/signatures.json")?;
+```
+
+For every entry whose `(module, name, needle)` triple appears in the cache, the scanner re-validates the cached `match_rva` by checking the pattern bytes at that exact location in the live module image. If the bytes still match, the entry is satisfied immediately without a full module sweep. If the bytes have changed, the scanner falls back to a fresh scan.
+
+<Info>
+  `StringRef` entries are never satisfied from cache because there is no stable byte pattern at `match_rva` to validate — they always perform a full scan.
+</Info>
+
+This makes patch-day re-runs fast: only entries whose anchors actually moved get re-scanned. Satisfied cache entries are marked with `from_cache: true` in the output.
+
+## Multi-language output
+
+After scanning, `src/signatures/writers.rs` emits five parallel views of the same hit list. The **pattern strings** (not resolved addresses) are emitted into `.hpp` and `.rs` files so consumers can scan at runtime — this keeps compiled artefacts build-portable:
+
+| File | Shape |
+|---|---|
+| `signatures.json` | `total` / `found` / `missing` summary + one entry per hit with RVA, VA, pattern, bytes, and prototype |
+| `signatures.hpp` | `namespace cs2::signatures { inline constexpr std::string_view X = "48 8B ..."; }` + `cs2::fn::<module>::X_t` typedef |
+| `signatures.cs` | `namespace CS2Sdk.Signatures { static class { const string ... } }` |
+| `signatures.rs` | `pub mod client_dll { pub const X: &str = "48 8B ..."; }` |
+| `SIGNATURES.md` | Markdown table with name, prototype, resolve mode, VA, RVA, and pattern |
+
+## Diff against the previous build
+
+When a previous `signatures.json` is found (via `--cache <PATH>` or auto-detected from the newest sibling session), the scanner also emits `diff.json`:
+
+```json
+{
+  "previous": "dumps/20-04-26-CS2-SDK/signatures/signatures.json",
+  "added":           [],
+  "removed":         [],
+  "shifted":         [{ "name": "CL_RecvUserCmds", "before": 8388608, "after": 8392704 }],
+  "pattern_changed": []
+}
+```
+
+| Key | Meaning |
+|---|---|
+| `added` | Patterns present in the new dump but not the previous one. |
+| `removed` | Patterns present in the previous dump but missing from the new one. |
+| `shifted` | Patterns found in both dumps with different RVAs. |
+| `pattern_changed` | Patterns whose `needle` string was updated between runs. |
+
+The patch-day workflow: dump, open `diff.json`, investigate every entry in `shifted` and `removed`, update `database.rs` if needed.
+
+## Source reference
+
+| Concern | File |
+|---|---|
+| Signature catalog | `src/signatures/database.rs` |
+| Scanner and `ResolveKind` | `src/signatures/mod.rs` |
+| Warm cache | `src/signatures/cache.rs` |
+| Multi-language emitters | `src/signatures/writers.rs` |
+| Diff | `src/signatures/diff.rs` |

@@ -1,0 +1,87 @@
+{
+  "projectType": "cli-tool",
+  "projectName": "CS2 SDK",
+  "projectDescription": "A single-binary external dumper for Counter-Strike 2 that extracts offsets, schemas, interfaces, buttons, and signatures from a live CS2 process and emits them in C++, C#, Rust, and Zig.",
+  "theme": "aspen",
+  "primaryColor": "#fa9e22",
+  "lightColor": "#2c2d74",
+  "darkColor": "#f1ece4",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "output-layout"
+            ]
+          },
+          {
+            "group": "Consuming the SDK",
+            "pages": [
+              "consuming/cpp",
+              "consuming/csharp",
+              "consuming/rust"
+            ]
+          },
+          {
+            "group": "Contributing",
+            "pages": [
+              "contributing/adding-signatures",
+              "contributing/guidelines"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Reference",
+        "groups": [
+          {
+            "group": "Internals",
+            "pages": [
+              "reference/patterns",
+              "reference/schema",
+              "reference/signature-pipeline",
+              "reference/vtables"
+            ]
+          },
+          {
+            "group": "CLI",
+            "pages": [
+              "reference/cli",
+              "reference/output-formats"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Single-binary dual-pass dump: offsets + signatures in one run against a shared memory snapshot",
+    "IDA-style byte-pattern scanner with Rel32, RipRel, and StringRef resolution modes",
+    "Source 2 schema walker producing typed C++ classes via SCHEMA_FIELD macros",
+    "Multi-language output: C++, C#, Rust, Zig for all offset and signature data",
+    "Per-interface vtable dumper with MSVC RTTI class-name recovery and method-name oracle",
+    "Warm cache from previous session's signatures.json for fast patch-day re-runs",
+    "Auto-diff vs previous session (added/removed/shifted signatures)",
+    "Dated session folders with a latest/ mirror for always-current URL access"
+  ],
+  "publicApiSurface": [
+    "cs2-sdk.exe (CLI binary)",
+    "--connector / --connector-args (memflow backend selection)",
+    "--file-types (output format list: cs,hpp,json,rs,zig)",
+    "--output (session output directory)",
+    "--skip-offsets / --skip-signatures (selective pass execution)",
+    "--cache / --no-cache (warm cache control)",
+    "--no-sound (silence audio cues)",
+    "dumps/<session>/offsets/cs2sdk.hpp (C++ single-include amalgamation)",
+    "dumps/<session>/offsets/cs2sdk.rs (Rust amalgamation module)",
+    "dumps/<session>/signatures/signatures.json (resolved signature database)",
+    "dumps/<session>/signatures/diff.json (patch-day delta)",
+    "dumps/latest/ (mirror of most recent session)",
+    "src/signatures/database.rs (signature catalog for contributors)"
+  ]
+}
